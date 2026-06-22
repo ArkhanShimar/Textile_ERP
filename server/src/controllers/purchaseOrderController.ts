@@ -364,6 +364,234 @@ export const confirmPurchaseOrder = async (req: Request, res: Response) => {
   }
 };
 
+export const markAsPacked = async (req: Request, res: Response) => {
+  try {
+    const purchaseOrder = await prisma.purchaseOrder.findUnique({
+      where: { id: req.params.id },
+      include: { items: true }
+    });
+
+    if (!purchaseOrder) {
+      return res.status(404).json({ error: 'Purchase order not found' });
+    }
+
+    if (purchaseOrder.status !== OrderStatus.APPROVED && purchaseOrder.status !== OrderStatus.ESTIMATED) {
+      return res.status(400).json({ error: 'Order can only be marked as packed from approved or estimated status' });
+    }
+
+    // Move reserved stock to actual stock out (since parcel is packed and sent to office)
+    for (const item of purchaseOrder.items) {
+      const inventory = await prisma.inventory.findUnique({
+        where: { productId: item.productId }
+      });
+
+      if (inventory) {
+        await prisma.inventory.update({
+          where: { id: inventory.id },
+          data: {
+            reservedQuantity: { decrement: item.quantity },
+            totalQuantity: { decrement: item.quantity }
+          }
+        });
+
+        await prisma.inventoryTransaction.create({
+          data: {
+            inventoryId: inventory.id,
+            productId: item.productId,
+            quantity: item.quantity,
+            type: 'STOCK_OUT',
+            reference: purchaseOrder.poNumber,
+            notes: 'Packed and sent to office',
+            createdBy: req.user?.userId
+          }
+        });
+      }
+    }
+
+    const updatedOrder = await prisma.purchaseOrder.update({
+      where: { id: req.params.id },
+      data: {
+        status: OrderStatus.PACKED,
+        packedAt: new Date(),
+        packedBy: req.user?.userId,
+        updatedBy: req.user?.userId
+      },
+      include: {
+        customer: true,
+        items: {
+          include: {
+            product: true
+          }
+        }
+      }
+    });
+
+    await logActivity(req.user?.userId || null, 'PACK', 'PurchaseOrder', purchaseOrder.id, `Marked PO as packed: ${purchaseOrder.poNumber}`, getClientIp(req), getUserAgent(req));
+
+    res.json(updatedOrder);
+  } catch (error) {
+    console.error('Mark as packed error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+export const recordCustomerResponse = async (req: Request, res: Response) => {
+  try {
+    const { response } = req.body; // 'ACCEPTED' or 'REJECTED'
+
+    const purchaseOrder = await prisma.purchaseOrder.findUnique({
+      where: { id: req.params.id },
+      include: { items: true }
+    });
+
+    if (!purchaseOrder) {
+      return res.status(404).json({ error: 'Purchase order not found' });
+    }
+
+    if (purchaseOrder.status !== OrderStatus.ESTIMATED) {
+      return res.status(400).json({ error: 'Customer response can only be recorded for estimated orders' });
+    }
+
+    if (response === 'REJECTED') {
+      // Release reserved inventory
+      for (const item of purchaseOrder.items) {
+        const inventory = await prisma.inventory.findUnique({
+          where: { productId: item.productId }
+        });
+
+        if (inventory) {
+          await prisma.inventory.update({
+            where: { id: inventory.id },
+            data: {
+              availableQuantity: { increment: item.quantity },
+              reservedQuantity: { decrement: item.quantity }
+            }
+          });
+
+          await prisma.inventoryTransaction.create({
+            data: {
+              inventoryId: inventory.id,
+              productId: item.productId,
+              quantity: item.quantity,
+              type: 'RELEASED',
+              reference: purchaseOrder.poNumber,
+              notes: 'Released due to customer rejection',
+              createdBy: req.user?.userId
+            }
+          });
+        }
+      }
+
+      const updatedOrder = await prisma.purchaseOrder.update({
+        where: { id: req.params.id },
+        data: {
+          status: OrderStatus.CANCELLED,
+          customerResponse: 'REJECTED',
+          cancelledAt: new Date(),
+          cancelledBy: req.user?.userId,
+          updatedBy: req.user?.userId
+        },
+        include: {
+          customer: true,
+          items: {
+            include: {
+              product: true
+            }
+          }
+        }
+      });
+
+      await logActivity(req.user?.userId || null, 'CUSTOMER_RESPONSE', 'PurchaseOrder', purchaseOrder.id, `Customer rejected estimation: ${purchaseOrder.poNumber}`, getClientIp(req), getUserAgent(req));
+
+      res.json(updatedOrder);
+    } else if (response === 'ACCEPTED') {
+      const updatedOrder = await prisma.purchaseOrder.update({
+        where: { id: req.params.id },
+        data: {
+          customerResponse: 'ACCEPTED',
+          updatedBy: req.user?.userId
+        },
+        include: {
+          customer: true,
+          items: {
+            include: {
+              product: true
+            }
+          }
+        }
+      });
+
+      await logActivity(req.user?.userId || null, 'CUSTOMER_RESPONSE', 'PurchaseOrder', purchaseOrder.id, `Customer accepted estimation: ${purchaseOrder.poNumber}`, getClientIp(req), getUserAgent(req));
+
+      res.json(updatedOrder);
+    } else {
+      return res.status(400).json({ error: 'Invalid response. Must be ACCEPTED or REJECTED' });
+    }
+  } catch (error) {
+    console.error('Record customer response error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+export const generateEstimationPDF = async (req: Request, res: Response) => {
+  try {
+    const purchaseOrder = await prisma.purchaseOrder.findUnique({
+      where: { id: req.params.id },
+      include: {
+        customer: true,
+        items: {
+          include: {
+            product: {
+              include: {
+                category: true,
+                store: true
+              }
+            }
+          }
+        }
+      }
+    });
+
+    if (!purchaseOrder) {
+      return res.status(404).json({ error: 'Purchase order not found' });
+    }
+
+    if (purchaseOrder.status !== OrderStatus.ESTIMATED) {
+      return res.status(400).json({ error: 'Estimation PDF can only be generated for estimated orders' });
+    }
+
+    // Generate PDF content (simplified - you may want to use a PDF library like pdfkit or puppeteer)
+    const estimationContent = `
+ESTIMATION
+==========
+PO Number: ${purchaseOrder.poNumber}
+Date: ${new Date().toLocaleDateString()}
+Customer: ${purchaseOrder.customer.name}
+
+Items:
+${purchaseOrder.items.map(item => 
+  `- ${item.product.name} (${item.product.code})
+    Quantity: ${item.quantity}
+    Unit Price: ₹${Number(item.unitPrice).toFixed(2)}
+    Total: ₹${Number(item.totalPrice).toFixed(2)}`
+).join('\n')}
+
+Subtotal: ₹${Number(purchaseOrder.subtotal).toFixed(2)}
+Estimated Amount: ₹${Number(purchaseOrder.estimatedAmount || purchaseOrder.totalAmount).toFixed(2)}
+
+Notes: ${purchaseOrder.notes || 'N/A'}
+    `;
+
+    // Return as text file for now (can be enhanced to PDF)
+    res.setHeader('Content-Type', 'text/plain');
+    res.setHeader('Content-Disposition', `attachment; filename="estimation-${purchaseOrder.poNumber}.txt"`);
+    res.send(estimationContent);
+  } catch (error) {
+    console.error('Generate estimation PDF error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
 export const cancelPurchaseOrder = async (req: Request, res: Response) => {
   try {
     const purchaseOrder = await prisma.purchaseOrder.findUnique({

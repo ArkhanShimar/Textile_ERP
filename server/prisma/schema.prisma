@@ -16,6 +16,7 @@ enum OrderStatus {
   PENDING
   APPROVED
   ESTIMATED
+  PACKED
   CONFIRMED
   PRINTED
   DISPATCHED
@@ -194,6 +195,9 @@ model PurchaseOrder {
   notes           String?
   deliveryAddress String?
   estimatedAmount Decimal?    @db.Decimal(12, 2)
+  customerResponse String?     // 'ACCEPTED' or 'REJECTED' for estimated orders
+  packedAt        DateTime?
+  packedBy        String?
   createdAt       DateTime    @default(now())
   updatedAt       DateTime    @updatedAt
   createdBy       String?

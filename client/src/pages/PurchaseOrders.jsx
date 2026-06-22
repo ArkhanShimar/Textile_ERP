@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
-import { FileText, Plus, Search, Filter, Eye, CheckCircle, DollarSign, XCircle, Printer, Download } from 'lucide-react';
+import { FileText, Plus, Search, Filter, Eye, CheckCircle, DollarSign, XCircle, Printer, Download, Package } from 'lucide-react';
 import Swal from 'sweetalert2';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
@@ -77,6 +77,54 @@ const PurchaseOrders = () => {
     }
   };
 
+  const handlePack = async (orderId) => {
+    try {
+      const token = localStorage.getItem('token');
+      await axios.post(`${API_URL}/api/purchase-orders/${orderId}/pack`, {}, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      Swal.fire({ icon: 'success', title: 'Success', text: 'Order marked as packed successfully', toast: true, position: 'top-end', timer: 2000, showConfirmButton: false });
+      fetchOrders();
+    } catch (error) {
+      Swal.fire({ icon: 'error', title: 'Error', text: error.response?.data?.error || 'Failed to mark order as packed', toast: true, position: 'top-end', timer: 3000, showConfirmButton: false });
+    }
+  };
+
+  const handleDownloadEstimation = async (orderId) => {
+    try {
+      const token = localStorage.getItem('token');
+      const response = await axios.get(`${API_URL}/api/purchase-orders/${orderId}/estimation-pdf`, {
+        headers: { Authorization: `Bearer ${token}` },
+        responseType: 'blob'
+      });
+      
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `estimation-${orderId}.txt`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      
+      Swal.fire({ icon: 'success', title: 'Success', text: 'Estimation document downloaded successfully', toast: true, position: 'top-end', timer: 2000, showConfirmButton: false });
+    } catch (error) {
+      Swal.fire({ icon: 'error', title: 'Error', text: error.response?.data?.error || 'Failed to download estimation document', toast: true, position: 'top-end', timer: 3000, showConfirmButton: false });
+    }
+  };
+
+  const handleCustomerResponse = async (orderId, response) => {
+    try {
+      const token = localStorage.getItem('token');
+      await axios.post(`${API_URL}/api/purchase-orders/${orderId}/customer-response`, { response }, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      Swal.fire({ icon: 'success', title: 'Success', text: `Customer response recorded: ${response}`, toast: true, position: 'top-end', timer: 2000, showConfirmButton: false });
+      fetchOrders();
+    } catch (error) {
+      Swal.fire({ icon: 'error', title: 'Error', text: error.response?.data?.error || 'Failed to record customer response', toast: true, position: 'top-end', timer: 3000, showConfirmButton: false });
+    }
+  };
+
   const handleCancel = async (orderId) => {
     if (!window.confirm('Are you sure you want to cancel this order?')) return;
 
@@ -97,6 +145,7 @@ const PurchaseOrders = () => {
       PENDING: 'bg-yellow-100 text-yellow-800',
       APPROVED: 'bg-blue-100 text-blue-800',
       ESTIMATED: 'bg-purple-100 text-purple-800',
+      PACKED: 'bg-orange-100 text-orange-800',
       CONFIRMED: 'bg-green-100 text-green-800',
       COMPLETED: 'bg-emerald-100 text-emerald-800',
       CANCELLED: 'bg-red-100 text-red-800'
@@ -114,11 +163,21 @@ const PurchaseOrders = () => {
       actions.push({ label: 'Approve', icon: CheckCircle, action: () => handleApprove(order.id), color: 'btn-success' });
       actions.push({ label: 'Estimate', icon: DollarSign, action: () => handleEstimate(order.id), color: 'btn-primary' });
     }
+    if (order.status === 'APPROVED' || order.status === 'ESTIMATED') {
+      actions.push({ label: 'Mark as Packed', icon: Package, action: () => handlePack(order.id), color: 'btn-warning' });
+    }
     if (order.status === 'ESTIMATED') {
+      actions.push({ label: 'Download Estimation', icon: Download, action: () => handleDownloadEstimation(order.id), color: 'btn-secondary' });
+    }
+    if (order.status === 'ESTIMATED' && !order.customerResponse) {
+      actions.push({ label: 'Customer Accepted', icon: CheckCircle, action: () => handleCustomerResponse(order.id, 'ACCEPTED'), color: 'btn-success' });
+      actions.push({ label: 'Customer Rejected', icon: XCircle, action: () => handleCustomerResponse(order.id, 'REJECTED'), color: 'btn-danger' });
+    }
+    if (order.status === 'ESTIMATED' && order.customerResponse === 'ACCEPTED') {
       actions.push({ label: 'Confirm', icon: CheckCircle, action: () => handleConfirm(order.id), color: 'btn-success' });
     }
     if (order.status !== 'COMPLETED' && order.status !== 'CANCELLED') {
-      actions.push({ label: 'Cancel', icon: XCircle, action: () => handleCancel(order.id), color: 'btn-danger' });
+      actions.push({ label: 'Cancel', icon: XCircle, action: () => handleCancel(order.id), color: 'btn-danger', prominent: true });
     }
     return actions;
   };
